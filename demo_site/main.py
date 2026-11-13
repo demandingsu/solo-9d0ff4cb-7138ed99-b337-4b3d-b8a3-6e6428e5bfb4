@@ -10,7 +10,15 @@ from fastapi.responses import RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
-from .data import NOTICE_BY_SLUG, PAGE_SIZE, TYPE_LABELS, notices_on_page, page_count
+from .data import (
+    NOTICE_BY_SLUG,
+    PAGE_SIZE,
+    TYPE_LABELS,
+    detail_graph,
+    index_graph,
+    notices_on_page,
+    page_count,
+)
 
 BASE_DIR = Path(__file__).resolve().parent
 
@@ -42,6 +50,7 @@ async def notice_list(request: Request, page: int = 1):
             "total_count": sum(1 for _ in NOTICE_BY_SLUG.values()),
             "type_labels": TYPE_LABELS,
             "site_name": os.getenv("DEMO_SITE_NAME", "采购公告示例站"),
+            "jsonld_graph": index_graph(notices),
         },
     )
 
@@ -59,7 +68,11 @@ async def notice_detail(request: Request, slug: str):
     return templates.TemplateResponse(
         request,
         "detail.html",
-        {"notice": notice, "type_labels": TYPE_LABELS},
+        {
+            "notice": notice,
+            "type_labels": TYPE_LABELS,
+            "jsonld_graph": detail_graph(notice),
+        },
     )
 
 

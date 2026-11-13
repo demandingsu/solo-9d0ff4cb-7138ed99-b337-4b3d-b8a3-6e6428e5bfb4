@@ -16,6 +16,7 @@ from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel, Field
 
 from .crawler import check_lot, normalize_url
+from .metadata import check_metadata
 
 BASE_DIR = Path(__file__).resolve().parent
 DEMO_INTERNAL_URL = os.getenv("DEMO_INTERNAL_URL", "http://localhost:8001").rstrip("/")
@@ -98,7 +99,7 @@ templates.env.filters["public_url"] = public_url_for
 @app.middleware("http")
 async def disable_stale_results(request: Request, call_next):
     response = await call_next(request)
-    if request.url.path in {"/", "/check", "/api/check"} or request.url.path.startswith("/demo"):
+    if request.url.path in {"/", "/check", "/api/check", "/metadata", "/api/metadata"} or request.url.path.startswith("/demo"):
         response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate"
         response.headers["Pragma"] = "no-cache"
     return response
@@ -108,6 +109,11 @@ class CheckPayload(BaseModel):
     list_url: str = Field(..., description="公告列表页地址")
     project_no: str = Field(..., description="项目编号")
     section_no: str = Field(..., description="标段号")
+
+
+class MetadataPayload(BaseModel):
+    list_url: str = Field(..., description="公告目录（列表页）地址")
+    project_no: str = Field(..., description="项目编号")
 
 
 def _demo_presets() -> list[dict[str, str]]:
@@ -145,12 +151,41 @@ def _demo_presets() -> list[dict[str, str]]:
     return presets
 
 
+def _metadata_presets() -> list[dict[str, str]]:
+    presets = [
+        {
+            "name": "跨页引用全部一致",
+            "list_url": DEMO_LIST_URL,
+            "project_no": "DEMO-2026-001",
+            "note": "项目节点在目录页，标段节点在各详情页，跨页解析后时间一致",
+        },
+        {
+            "name": "差异、冲突与悬空引用",
+            "list_url": DEMO_LIST_URL,
+            "project_no": "DEMO-2026-004",
+            "note": "D 包机读时间与正文不符；C 包机读声明自相冲突；E 包引用悬空",
+        },
+        {
+            "name": "单标段一致",
+            "list_url": DEMO_LIST_URL,
+            "project_no": "DEMO-2026-003",
+            "note": "询价公告 B 包，目录与详情两侧时间一致",
+        },
+    ]
+    for preset in presets:
+        preset["href"] = "/metadata?" + urlencode(
+            {"list_url": preset["list_url"], "project_no": preset["project_no"]}
+        )
+    return presets
+
+
 def _base_context(request: Request) -> dict:
     return {
         "request": request,
         "demo_list_url": DEMO_LIST_URL,
         "demo_public_url": "/demo/notices?page=1",
         "presets": _demo_presets(),
+        "metadata_presets": _metadata_presets(),
         "demo_available": bool(DEMO_INTERNAL_URL),
     }
 
@@ -233,6 +268,74 @@ async def api_check(
 @app.post("/api/check")
 async def api_check_post(payload: CheckPayload):
     return await _json_result(payload.list_url, payload.project_no, payload.section_no)
+
+
+# ---------------------------------------------------------------------------
+# Machine-readable metadata reconciliation
+# ---------------------------------------------------------------------------
+
+
+@app.get("/metadata", response_class=HTMLResponse)
+async def metadata_page(
+    request: Request,
+    list_url: str = "",
+    project_no: str = "",
+):
+    form = {"list_url": list_url, "project_no": project_no}
+    if not list_url.strip() or not project_no.strip():
+        return templates.TemplateResponse(
+            request,
+            "metadata.html",
+            _base_context(request)
+            | {
+                "result": None,
+                "form": form,
+                "form_error": "请填写公告目录地址和项目编号。",
+            },
+            status_code=400,
+        )
+
+    try:
+        normalized = demo_crawl_url(list_url)
+    except ValueError as exc:
+        return templates.TemplateResponse(
+            request,
+            "metadata.html",
+            _base_context(request)
+            | {"result": None, "form": form, "form_error": str(exc)},
+            status_code=400,
+        )
+
+    outcome = await check_metadata(normalized, project_no)
+    result = outcome.as_dict(public_url_for)
+    return templates.TemplateResponse(
+        request,
+        "metadata.html",
+        _base_context(request) | {"result": result, "form": form, "form_error": None},
+    )
+
+
+async def _metadata_json(list_url: str, project_no: str) -> JSONResponse:
+    try:
+        crawl_url = demo_crawl_url(list_url)
+    except ValueError:
+        outcome = await check_metadata(list_url, project_no)
+        return JSONResponse(outcome.as_dict(public_url_for), status_code=400)
+    outcome = await check_metadata(crawl_url, project_no)
+    return JSONResponse(outcome.as_dict(public_url_for))
+
+
+@app.get("/api/metadata")
+async def api_metadata(
+    list_url: Annotated[str, Query(description="公告目录（列表页）地址")],
+    project_no: Annotated[str, Query(description="项目编号")],
+):
+    return await _metadata_json(list_url, project_no)
+
+
+@app.post("/api/metadata")
+async def api_metadata_post(payload: MetadataPayload):
+    return await _metadata_json(payload.list_url, payload.project_no)
 
 
 _ABSOLUTE_LINK_RE = re.compile(r'((?:href|src|action)=["\'])(/(?!/))', re.I)

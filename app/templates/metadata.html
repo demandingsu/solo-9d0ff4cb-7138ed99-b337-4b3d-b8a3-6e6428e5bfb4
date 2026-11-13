@@ -1,0 +1,225 @@
+{% extends "base.html" %}
+{% block title %}{% if result %}机读元数据核对结果 · {% endif %}机读元数据核对{% endblock %}
+{% block content %}
+<section class="hero hero-compact">
+  <div class="hero-copy">
+    <p class="eyebrow">招标站信息管理员工作台</p>
+    <h1>下游索引读到的截标时间，和原公告一致吗？</h1>
+    <p class="lede">
+      输入公告目录地址与项目编号，工具沿同站分页读取单标段原公告详情，提取正文中的项目编号、标段号与截止时间；
+      同时收集目录页与详情页 JSON-LD <code>@graph</code> 中的项目节点（<code>projectNo</code> / <code>hasPart</code>）
+      与标段节点（<code>lotNo</code> / <code>bidDeadline</code>），跨页关联后逐标段核对。
+    </p>
+    <ul class="feature-list">
+      <li>仅当项目、标段两侧均对应时才比较时间</li>
+      <li>机读声明冲突或引用悬空 → 待核，不因一条吻合即报一致</li>
+      <li>抓取或解析失败 → 本轮不完整，保留已确认差异但不宣称全部一致</li>
+    </ul>
+  </div>
+
+  <aside class="demo-card">
+    <div class="demo-card-head">
+      <span class="demo-dot"></span>
+      <div>
+        <strong>离线演示，已内置</strong>
+        <p>示例站目录与详情页均带 JSON-LD @graph。</p>
+      </div>
+    </div>
+    <div class="preset-list">
+      {% for preset in metadata_presets %}
+      <a class="preset" href="{{ preset.href }}">
+        <span>
+          <strong>{{ preset.name }}</strong>
+          <small>{{ preset.project_no }} · {{ preset.note }}</small>
+        </span>
+        <span class="preset-arrow" aria-hidden="true">→</span>
+      </a>
+      {% endfor %}
+    </div>
+    <p class="demo-hint">
+      来源链接同样通过本站 <a href="{{ demo_public_url }}" target="_blank" rel="noopener">/demo</a>
+      代理打开，断网可用。
+    </p>
+  </aside>
+</section>
+
+<form class="check-form check-form-meta" method="get" action="/metadata" aria-label="机读元数据核对">
+  <div class="field field-url">
+    <label for="list_url">公告目录（列表页）地址</label>
+    <input id="list_url" name="list_url" type="text" required
+           value="{{ form.list_url or demo_list_url }}"
+           placeholder="https://example.com/notices?page=1"
+           autocomplete="off" spellcheck="false">
+    <span class="field-note">从目录第一页开始，工具自行沿“下一页”抓取同站后续页面。</span>
+  </div>
+  <div class="field field-project">
+    <label for="project_no">项目编号</label>
+    <input id="project_no" name="project_no" type="text" required
+           value="{{ form.project_no or '' }}" placeholder="如 DEMO-2026-004"
+           autocomplete="off" spellcheck="false">
+  </div>
+  <button class="submit-button" type="submit">
+    开始核对
+    <span aria-hidden="true">→</span>
+  </button>
+</form>
+
+{% if form_error %}
+<div class="alert alert-error" role="alert">
+  <strong>无法开始核对</strong>
+  <p>{{ form_error }}</p>
+</div>
+{% endif %}
+
+{% if result %}
+<section class="result-section" aria-labelledby="result-heading">
+  <div class="section-heading">
+    <div>
+      <p class="eyebrow">核对结果</p>
+      <h2 id="result-heading">项目 {{ result.project_no }}</h2>
+    </div>
+    <span class="timestamp">本次实时抓取 · {{ result.searched_pages|length }} 个目录页 · {{ result.detail_page_count }} 个详情页</span>
+  </div>
+
+  <article class="verdict {% if result.complete and result.summary.difference == 0 and result.summary.pending == 0 %}verdict-ok{% else %}verdict-unknown{% endif %}">
+    <div class="verdict-top">
+      {% if result.complete %}
+      <span class="status-badge status-ok">本轮核对完整</span>
+      {% else %}
+      <span class="status-badge status-unknown">本轮不完整</span>
+      {% endif %}
+      <span class="confidence {% if not result.complete %}confidence-warn{% endif %}">
+        一致 {{ result.summary.consistent or 0 }} ·
+        差异 {{ result.summary.difference or 0 }} ·
+        待核 {{ result.summary.pending or 0 }}
+      </span>
+    </div>
+    <p class="deadline-caption meta-verdict-copy">
+      {% if not result.complete %}
+      存在页面抓取或解析失败，本轮核对<strong>不完整</strong>：下列已确认的差异仍然有效，但不能宣称全部一致。请先处理失败地址后重新核对。
+      {% elif result.summary.difference or result.summary.pending %}
+      本轮已完整核对全部可达页面，但存在差异或待核项，需修正发布内容后重新核对。
+      {% else %}
+      全部可关联标段的机读 <code>bidDeadline</code> 均与原公告正文截止时间一致。
+      {% endif %}
+    </p>
+  </article>
+
+  {% if result.failures %}
+  <div class="alert alert-unknown" role="alert">
+    <strong>本轮不完整：以下地址抓取或解析失败</strong>
+    <div class="failure-list">
+      <ul>
+        {% for failure in result.failures %}
+        <li>
+          <span class="failure-reason">[{{ failure.stage }}] {{ failure.reason }}</span>
+          <a href="{{ failure.url }}" target="_blank" rel="noopener">{{ failure.url }}</a>
+        </li>
+        {% endfor %}
+      </ul>
+    </div>
+  </div>
+  {% endif %}
+
+  {% if result.warnings %}
+  <div class="alert alert-warning">
+    <strong>核对提示</strong>
+    <ul>
+      {% for warning in result.warnings %}<li>{{ warning }}</li>{% endfor %}
+    </ul>
+  </div>
+  {% endif %}
+
+  <div class="content-card">
+    <div class="card-heading">
+      <div>
+        <p class="eyebrow">逐标段核对</p>
+        <h3>差异、待核项及两侧来源</h3>
+      </div>
+      <span class="muted-note">仅比较项目与标段均对应的数据</span>
+    </div>
+
+    {% if result.rows %}
+    <div class="table-wrap">
+      <table class="result-table meta-table">
+        <thead>
+          <tr>
+            <th>结论</th>
+            <th>标段号</th>
+            <th>机读 bidDeadline（来源页）</th>
+            <th>原公告正文截止时间（来源页）</th>
+            <th>判定说明</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for row in result.rows %}
+          <tr class="meta-row meta-row-{{ row.status }}">
+            <td><span class="meta-badge meta-badge-{{ row.status }}">{{ row.status_label }}</span></td>
+            <td class="nowrap"><strong>{{ row.lot_no or '—' }}</strong>
+              {% if row.project_id %}<div class="cell-sub">{{ row.project_id }}</div>{% endif %}
+            </td>
+            <td>
+              {% if row.declarations %}
+                {% for decl in row.declarations %}
+                <div class="decl-line">
+                  <span class="decl-time">{{ decl.deadline or decl.deadline_raw or '（无法解析）' }}</span>
+                  <a class="inline-link" href="{{ decl.source_url }}" target="_blank" rel="noopener">机读来源 ↗</a>
+                </div>
+                {% endfor %}
+              {% else %}
+                <span class="muted-note">无机读标段节点</span>
+              {% endif %}
+              {% if row.reference_ids %}
+              <div class="cell-sub">hasPart 引用：{% for ref in row.reference_ids %}<code>{{ ref }}</code>{% if not loop.last %}、{% endif %}{% endfor %}</div>
+              {% endif %}
+            </td>
+            <td>
+              {% if row.body %}
+                <div class="decl-line">
+                  <span class="decl-time">{{ row.body.deadline or '（正文未载明可解析时间）' }}</span>
+                  <a class="inline-link" href="{{ row.body.url }}" target="_blank" rel="noopener">正文来源 ↗</a>
+                </div>
+                <div class="cell-sub">{{ row.body.title }}</div>
+              {% else %}
+                <span class="muted-note">无对应原公告正文</span>
+              {% endif %}
+            </td>
+            <td class="notice-title-cell">{{ row.reason }}</td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    {% else %}
+    <p class="empty-copy">没有可展示的核对行。此情况下不能判定该项目的机读数据与正文一致。</p>
+    {% endif %}
+  </div>
+
+  <details class="scope-details">
+    <summary>查看本轮收集的 JSON-LD 页面（{{ result.graph_docs|length }} 个）与检索地址</summary>
+    <p class="table-note">含 JSON-LD 的页面及节点数；解析失败的页面同时计入“本轮不完整/提示”。</p>
+    <ul>
+      {% for doc in result.graph_docs %}
+      <li>
+        <a href="{{ doc.url }}" target="_blank" rel="noopener">{{ doc.url }}</a>
+        [{{ '目录页' if doc.stage == 'list' else '详情页' }}]
+        节点 {{ doc.node_count }}
+        {% if not doc.ok %}<strong class="meta-badge meta-badge-pending">解析失败：{{ doc.error }}</strong>{% endif %}
+      </li>
+      {% endfor %}
+    </ul>
+    <p>读取过的详情页（{{ result.checked_detail_urls|length }} 个）：</p>
+    <ul>
+      {% for url in result.checked_detail_urls %}
+      <li><a href="{{ url }}" target="_blank" rel="noopener">{{ url }}</a></li>
+      {% endfor %}
+    </ul>
+  </details>
+
+  <div class="result-actions">
+    <a class="button-secondary" href="/metadata">核对另一个项目</a>
+    <span>本次查询不保存数据，刷新或重新查询会重新抓取。</span>
+  </div>
+</section>
+{% endif %}
+{% endblock %}

@@ -22,6 +22,13 @@ class Notice:
     deadline_label: str | None
     body: tuple[str, ...]
     project_name: str
+    # Machine-readable metadata embedded as JSON-LD @graph.  Project nodes
+    # live on the index pages and reference lot nodes by @id; the lot nodes
+    # themselves are published on original-notice detail pages, so resolving
+    # them requires following the pagination across pages.
+    graph_deadline: str | None = None
+    graph_conflict_deadline: str | None = None
+    include_lot_node: bool = False
 
 
 NOTICES: tuple[Notice, ...] = (
@@ -41,6 +48,8 @@ NOTICES: tuple[Notice, ...] = (
             "投标文件应在上述截止时间前递交至滨河公共资源交易中心。",
         ),
         project_name="滨河智慧园区设备采购项目",
+        include_lot_node=True,
+        graph_deadline="2026-11-02T09:30:00+08:00",
     ),
     Notice(
         slug="DEMO-2026-001-02-original",
@@ -58,6 +67,8 @@ NOTICES: tuple[Notice, ...] = (
             "本标段与 01 标段分别评审，投标人应按标段分别递交文件。",
         ),
         project_name="滨河智慧园区设备采购项目",
+        include_lot_node=True,
+        graph_deadline="2026-11-03T09:30:00+08:00",
     ),
     Notice(
         slug="DEMO-2026-002-A-original",
@@ -75,6 +86,8 @@ NOTICES: tuple[Notice, ...] = (
             "响应文件提交地点：北岸区公共资源交易中心三楼。",
         ),
         project_name="北岸道路照明提升项目",
+        include_lot_node=True,
+        graph_deadline="2026-11-20T14:00:00+08:00",
     ),
     Notice(
         slug="DEMO-2026-001-01-extension",
@@ -125,6 +138,8 @@ NOTICES: tuple[Notice, ...] = (
             "报价截止时间：2026年12月02日 10:00。",
         ),
         project_name="西岭绿化养护服务项目",
+        include_lot_node=True,
+        graph_deadline="2026-12-02T10:00:00+08:00",
     ),
     Notice(
         slug="DEMO-2026-002-A-extension",
@@ -175,6 +190,57 @@ NOTICES: tuple[Notice, ...] = (
         ),
         project_name="北岸道路照明提升项目",
     ),
+    # --- Machine-readable metadata reconciliation samples ---------------
+    # Project DEMO-2026-004 deliberately contains every metadata defect the
+    # verifier must surface: a cross-page hasPart reference that resolves
+    # correctly, one lot whose JSON-LD deadline disagrees with the body, a
+    # duplicate lot node with a conflicting deadline, and a hasPart
+    # reference that points at a node no page publishes (dangling).
+    Notice(
+        slug="DEMO-2026-004-C-original",
+        project_no="DEMO-2026-004",
+        section_no="C",
+        notice_type="original",
+        title="东港智慧停车系统采购项目（C包）招标公告",
+        published_at="2026-10-30 09:30",
+        deadline="2026-12-08 09:30",
+        deadline_label="投标截止时间",
+        body=(
+            "东港智慧停车系统采购项目（C包）进行公开招标。",
+            "项目编号：DEMO-2026-004；包号：C。",
+            "投标截止时间：2026年12月08日 09:30（北京时间）。",
+            "投标文件递交地点：东港市公共资源交易中心。",
+        ),
+        project_name="东港智慧停车系统采购项目",
+        # The detail page publishes the same lot @id twice with different
+        # bidDeadline values, mimicking two pages disagreeing: the
+        # machine-readable side is internally inconsistent, so the lot must
+        # stay "pending review" even though one value matches the body.
+        include_lot_node=True,
+        graph_deadline="2026-12-08T09:30:00+08:00",
+        graph_conflict_deadline="2026-12-10T15:00:00+08:00",
+    ),
+    Notice(
+        slug="DEMO-2026-004-D-original",
+        project_no="DEMO-2026-004",
+        section_no="D",
+        notice_type="original",
+        title="东港智慧停车系统采购项目（D包）招标公告",
+        published_at="2026-10-31 10:00",
+        deadline="2026-12-15 09:30",
+        deadline_label="投标截止时间",
+        body=(
+            "东港智慧停车系统采购项目（D包）进行公开招标。",
+            "项目编号：DEMO-2026-004；包号：D。",
+            "投标截止时间：2026年12月15日 09:30（北京时间）。",
+            "本包与 C 包分别报名、分别评审。",
+        ),
+        project_name="东港智慧停车系统采购项目",
+        # The lot node resolves correctly across pages but its machine
+        # deadline does not match the body: a plain difference.
+        include_lot_node=True,
+        graph_deadline="2026-12-16T09:30:00+08:00",
+    ),
 )
 
 
@@ -198,3 +264,86 @@ def page_count() -> int:
 def notices_on_page(page: int) -> list[Notice]:
     start = (page - 1) * PAGE_SIZE
     return list(NOTICES_ASC[start : start + PAGE_SIZE])
+
+
+# ---------------------------------------------------------------------------
+# JSON-LD @graph construction
+# ---------------------------------------------------------------------------
+
+# A dangling reference used by the DEMO-2026-004 sample: no page ever
+# publishes a node with this @id.
+DANGLING_LOT_ID = "/notices/detail/DEMO-2026-004-E-original#lot-E"
+
+
+def project_node_id(notice: Notice) -> str:
+    return f"/notices?project={notice.project_no}#project"
+
+
+def lot_node_id(notice: Notice) -> str:
+    return f"/notices/detail/{notice.slug}#lot-{notice.section_no}"
+
+
+def lot_graph_node(notice: Notice) -> dict:
+    """The lot node embedded in a detail page's JSON-LD @graph."""
+
+    node: dict = {
+        "@id": lot_node_id(notice),
+        "@type": "TenderLot",
+        "lotNo": notice.section_no,
+    }
+    if notice.graph_deadline is not None:
+        node["bidDeadline"] = notice.graph_deadline
+    return node
+
+
+def detail_graph(notice: Notice) -> list[dict]:
+    """All @graph nodes a detail page publishes."""
+
+    nodes: list[dict] = []
+    if notice.include_lot_node:
+        nodes.append(lot_graph_node(notice))
+    # The conflict sample publishes a second node carrying the same @id but
+    # a different bidDeadline, mimicking two pages disagreeing.
+    if notice.graph_conflict_deadline is not None:
+        nodes.append(
+            {
+                "@id": lot_node_id(notice),
+                "@type": "TenderLot",
+                "lotNo": notice.section_no,
+                "bidDeadline": notice.graph_conflict_deadline,
+            }
+        )
+    return nodes
+
+
+def index_graph(notices: list[Notice]) -> list[dict]:
+    """Project nodes for an index page; each references its lot nodes.
+
+    A project node is emitted once per distinct project number visible on
+    the page.  Its ``hasPart`` references lot nodes by @id -- including lot
+    nodes that live on a different page, which is exactly the cross-page
+    association the verifier has to resolve.
+    """
+
+    nodes: list[dict] = []
+    seen: set[str] = set()
+    for notice in notices:
+        if notice.project_no in seen:
+            continue
+        seen.add(notice.project_no)
+        parts = [
+            {"@id": lot_node_id(item)}
+            for item in NOTICES
+            if item.project_no == notice.project_no and item.include_lot_node
+        ]
+        if notice.project_no == "DEMO-2026-004":
+            parts.append({"@id": DANGLING_LOT_ID})
+        nodes.append(
+            {
+                "@id": project_node_id(notice),
+                "@type": "Project",
+                "projectNo": notice.project_no,
+                "hasPart": parts,
+            }
+        )
+    return nodes
